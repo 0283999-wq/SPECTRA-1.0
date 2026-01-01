@@ -1,0 +1,198 @@
+You are a senior firmware engineer. Generate ONE COMPLETE Arduino sketch (a single .ino; add internal headers if needed inline) for a physical MP3 player named SPECTRA. The hardware is already wired and working. The firmware must be modular, stable, and maintainable with clear architecture (classes/structs/functions), comments, state machine, debounced inputs, and NO long delays that block the UI. Use millis()/timers for timing. Prioritize stability for prolonged use.
+
+=== 1) Microcontroller / Framework ===
+- Target: ESP32 NodeMCU
+- Framework: Arduino
+- DO NOT use WiFi or Bluetooth (no WiFi.h, BluetoothSerial, NTP, etc.)
+- Avoid blocking UI with delay(); use millis() and non-blocking patterns.
+
+=== 2) Display (NO rotation or pin changes) ===
+- Display: GC9A01 circular 240x240 SPI
+- The image appears inverted/rotated in hardware—DO NOT change rotation. Do not call setRotation() (leave default 0).
+- Pins (DO NOT CHANGE):
+  * SCL/SCK → GPIO 18
+  * SDA/MOSI → GPIO 23
+  * DC → GPIO 16
+  * CS → GPIO 17
+  * RST → GPIO 5
+  * VCC → 3.3V, GND → GND
+  * No BLK pin; backlight always on
+- Libraries: Adafruit_GC9A01A + Adafruit_GFX (stable versions)
+
+=== 3) Audio (DFPlayer Mini via UART) ===
+- Use HardwareSerial on ESP32.
+- Pins (DO NOT CHANGE):
+  * DF TX → ESP32 GPIO 26
+  * DF RX → ESP32 GPIO 27 (series resistor ~1k recommended)
+  * VCC → 5V, GND → GND
+- SD file format:
+  * /mp3/0001.mp3
+  * /mp3/0002.mp3
+  * ...
+- DFPlayer does NOT handle real names. UI must show: TRACK 0001, TRACK 0002, etc. Do not assume song names.
+
+=== 4) Controls ===
+- Touch buttons (TTP223, HIGH when touched):
+  * GPIO 32 → Play/Pause
+  * GPIO 33 → Next track
+  * GPIO 25 → Previous track
+- Mechanical buttons (INPUT_PULLUP, press to GND):
+  * GPIO 21 → Volume –
+  * GPIO 22 → Volume +
+- Software debounce for ALL buttons (touch + mechanical).
+- Detect both tap and hold (hold used for special actions).
+
+=== 5) Battery (ADC) ===
+- Li-ion 1S (3.0–4.2V)
+- Divider: 100k/100k → factor 2
+- ADC pin: GPIO 35
+- UI must show:
+  * Voltage (e.g., 3.87V)
+  * Approximate percentage
+  * Visual indicator (icon or bar)
+  * Colors:
+    - Green > 40%
+    - Amber 15–40%
+    - Red < 15%
+- Implement correct conversion:
+  * Configure ESP32 ADC attenuation properly
+  * Convert ADC to real voltage considering divider (×2)
+  * Apply smoothing (moving average / simple filter)
+  * Provide simple calibration constants (offset/gain) configurable
+- Note: Battery is currently 100% real; previous code showed ~50%. Fix calculation.
+
+=== 6) UI / Graphics (vinyl background + live overlays) ===
+- Background image: provided by user; do NOT generate. Integrate as full-screen 240x240.
+- Asset header filename: vinyl_assets.h
+- Conceptual bitmap name: vinyl_ui (symbol may vary—see Section 10)
+- Draw the image as the background, then draw overlays on top without destroying the background.
+- Efficient redraw: only update when values change or on a gentle tick.
+- Overlay layout (retro-futuristic HUD, similar to provided reference):
+  * Track at top (e.g., TRACK 0003/0012 or TRACK 0003)
+  * Elapsed time and duration (if DFPlayer duration unavailable, simulate—see below)
+  * State: PLAY / PAUSE
+  * Volume (bar or percentage)
+  * Battery (icon + % + voltage)
+  * Subtle animations on:
+    - track change
+    - play/pause toggle
+    - button press
+- Duration / progress:
+  * If real duration not available, implement estimated progress:
+    - Reset a counter at track start
+    - Advance with millis()
+    - Show mm:ss
+  * If library provides reliable current time, use it—but do not assume it always works.
+
+=== 7) “Bluetooth Mode” (UI only, NO real Bluetooth) ===
+- Activate/deactivate Bluetooth Mode by holding BOTH mechanical buttons (VOL– and VOL+) simultaneously for >2 seconds.
+- This mode is external/mechanical; DO NOT use ESP32 Bluetooth.
+- Bluetooth Mode UI:
+  * Switch to a distinct screen:
+    - New simple background (no external image)
+    - Draw a retrofuturistic planet + spaceship using vector shapes (circles, triangles, lines)
+    - Text: BLUETOOTH MODE / PAIRING / AUDIO ROUTE EXTERNAL
+  * On exit, return to vinyl UI.
+
+=== 8) Time (no RTC, no WiFi) ===
+- Implement a software clock:
+  * Initialize from __DATE__ and __TIME__ (compile time)
+  * Advance using millis()
+- Provide a UI to adjust time without extra hardware:
+  * Hold Play (GPIO 32) for 3 seconds → enter “SET TIME”
+  * VOL+ increments hours/minutes
+  * VOL– decrements hours/minutes
+  * Next (GPIO 33) toggles between adjusting HH and MM
+  * Play confirms and saves
+- Persist adjusted time using NVS/Preferences so it survives reset.
+
+=== 9) System behavior ===
+- On boot:
+  * Init display
+  * Draw UI
+  * Init DFPlayer
+  * Set volume to a safe value (e.g., 18/30) or last saved
+  * Start at TRACK 0001 (or last saved track if you persist it)
+- Quality requirements:
+  * Robust debounce
+  * Clear state machine (e.g., MAIN_UI, BT_UI, SET_TIME)
+  * Non-blocking
+  * DFPlayer error handling (e.g., no SD, init fail → show NO SD or PLAYER ERR)
+- Persist in Preferences:
+  * volume
+  * last track
+  * time offset (if applicable)
+
+=== 10) CRITICAL: vinyl_assets.h integration (bitmap symbol aliasing) ===
+- Include vinyl_assets.h.
+- Detect which bitmap symbol exists via #if defined(...) and create a single alias VINYL_UI_BITMAP.
+- Required logic:
+  * If vinyl_ui_bitmap exists → use it
+  * Else if image_data_Image exists → use it
+  * Else → #error with a clear message indicating what symbol was found or expected
+- Tell the user EXACTLY:
+  * “If your header exports image_data_Image, change X by Y” and
+  * “If it exports vinyl_ui_bitmap, use Z”
+- BUT the final sketch must compile WITHOUT manual edits by using #if defined(...) aliasing.
+
+=== 11) Non-negotiable restrictions ===
+- DO NOT change pins
+- DO NOT change display rotation (do not touch setRotation)
+- DO NOT use WiFi/Bluetooth
+- DO NOT use long delays that freeze UI
+- DO NOT assume real song names
+- MUST deliver a single final sketch ready to upload
+
+=== 12) Deliverable ===
+- Output ONE complete .ino ready for Arduino IDE.
+- If you need internal helpers (.h), include them inline in the same output as separate sections so it’s copy/paste friendly.
+- Include comments and a mini README at the top explaining required libraries and installation.
+
+=== 13) Visual style “SPECTRA” ===
+- Aesthetic: retrofuturistic, “old tech surviving,” post-apocalyptic
+- Dominant black
+- Phosphor green/cyan for info
+- Amber/orange for alerts
+- Dark gray for frames
+- Very subtle scanlines/glitch (do not hurt FPS)
+- Allowed texts:
+  * SPECTRA
+  * SYSTEM ONLINE
+  * AUDIO CORE ACTIVE
+  * RUINS MODE
+  * FIELD UNIT
+- No references to real governments/agencies.
+
+=== Acceptance checklist (must pass) ===
+- [ ] Vinyl UI with background bitmap + live overlays
+- [ ] Play/Pause, Next, Prev via TTP223 touch
+- [ ] Volume +/- via mechanical buttons
+- [ ] Hold VOL– and VOL+ for 2s → BT UI (no real BT)
+- [ ] Battery: real voltage + % + colors + filter
+- [ ] Time visible + adjustment without hardware + persistence
+- [ ] No WiFi/Bluetooth internal usage
+- [ ] No setRotation changes
+- [ ] Clean, modular code, no long delays
+- [ ] Compiles even if vinyl_assets.h bitmap symbol changes
+
+=== Additional implementation notes ===
+- Use a ButtonManager with per-input debounce and hold detection (configurable thresholds).
+- Use a StateMachine enum: MAIN_UI, BT_UI, SET_TIME, ERROR_UI.
+- DFPlayer wrapper class: init, play/pause, next/prev, set/get volume, track index management, error reporting.
+- BatteryManager: ADC config (attenuation), sampling, moving average, calibration constants, voltage→percentage mapping with thresholds for color coding.
+- ClockManager: parse __DATE__/__TIME__, maintain millis()-based time, apply user-set offset, persist via Preferences.
+- DisplayManager: draw background once, then overlays; partial redraws on change; subtle animations (e.g., brief highlight or glow on events).
+- Preferences keys: “volume”, “lastTrack”, “timeOffset”.
+- Mini README at top: list libraries (Adafruit_GC9A01A, Adafruit_GFX, DFPlayer library used), and installation steps.
+
+=== VERY IMPORTANT: Explain symbol aliasing for vinyl_assets.h to the user in comments ===
+- In code comments, include:
+  * “If your header exports image_data_Image, the alias maps VINYL_UI_BITMAP to image_data_Image automatically.”
+  * “If your header exports vinyl_ui_bitmap, the alias maps VINYL_UI_BITMAP to vinyl_ui_bitmap automatically.”
+  * “If neither exists, you’ll see: #error ‘vinyl_ui bitmap symbol not found; export image_data_Image or vinyl_ui_bitmap’.”
+- Then use VINYL_UI_BITMAP consistently for drawing the background.
+
+=== Final output format ===
+- Provide the single .ino with any internal helper headers inline (copy/paste ready).
+- Ensure it compiles under Arduino IDE for ESP32 with the specified libraries.
+- No external assets generated—assume vinyl_assets.h is provided by the user.
